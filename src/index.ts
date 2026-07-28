@@ -113,6 +113,10 @@ interface DiffPreset {
 interface DiffUserConfig {
 	diffTheme?: string;
 	diffColors?: Record<string, string>;
+	diffShikiThemes?: {
+		light?: string;
+		dark?: string;
+	};
 }
 
 const DIFF_PRESETS: Record<string, DiffPreset> = {
@@ -238,6 +242,10 @@ let _autoDerivePending = true;
 /** Whether user set explicit bg config (via preset or per-color overrides). */
 let _hasExplicitBgConfig = false;
 
+/** Shiki themes to use for light and dark pi themes. Populated from diffShikiThemes config. */
+let _shikiLight: BundledTheme = "github-light" as BundledTheme;
+let _shikiDark: BundledTheme = "github-dark" as BundledTheme;
+
 /** Auto-derive all diff background colors from the pi theme's fg diff colors.
  *  Reads toolSuccessBg as the add/context base and toolErrorBg as the delete base,
  *  then mixes accent colors into each. Falls back to black (0,0,0) when a theme
@@ -307,8 +315,8 @@ function loadDiffConfig(): DiffUserConfig {
 		try {
 			if (existsSync(p)) {
 				const raw = JSON.parse(readFileSync(p, "utf-8"));
-				if (raw.diffTheme || raw.diffColors) {
-					return { diffTheme: raw.diffTheme, diffColors: raw.diffColors };
+				if (raw.diffTheme || raw.diffColors || raw.diffShikiThemes) {
+					return { diffTheme: raw.diffTheme, diffColors: raw.diffColors, diffShikiThemes: raw.diffShikiThemes };
 				}
 			}
 		} catch {
@@ -396,9 +404,14 @@ function applyDiffPalette(): void {
 		FG_SAFE_MUTED = v;
 	});
 
-	// --- Shiki syntax theme ---
+	// --- Shiki syntax theme (static fallback override) ---
 	const shiki = ov.shikiTheme ?? preset?.shikiTheme;
 	if (shiki) THEME = shiki as BundledTheme;
+
+	// --- Light/dark Shiki theme mapping for dynamic switching ---
+	const st = config.diffShikiThemes;
+	if (st?.light) _shikiLight = st.light as BundledTheme;
+	if (st?.dark) _shikiDark = st.dark as BundledTheme;
 
 	// --- Rebuild derived constants ---
 	DIVIDER = `${FG_RULE}${RST}`;
@@ -557,15 +570,40 @@ function themeCacheKey(theme?: PiTheme): string {
 	return parts.join("|");
 }
 
+/** Detect whether the current pi theme is light or dark by checking
+ *  the luminance of toolSuccessBg. Returns "light" or "dark". */
+function detectThemeMode(theme?: PiTheme): "light" | "dark" {
+	if (theme?.getBgAnsi) {
+		try {
+			const bgAnsi = theme.getBgAnsi("toolSuccessBg");
+			const parsed = parseAnsiRgb(bgAnsi);
+			if (parsed) {
+				const luminance = 0.2126 * parsed.r + 0.7152 * parsed.g + 0.0722 * parsed.b;
+				return luminance > 128 ? "light" : "dark";
+			}
+		} catch {
+			/* ignore */
+		}
+	}
+	return "dark";
+}
+
 /** Resolve diff fg colors from theme (if available), falling back to hardcoded ANSI.
  *  On first call with a valid theme, auto-derives bg colors if no explicit config was set.
- *  Always reads toolSuccessBg for BG_BASE (used for context/add line backgrounds). */
+ *  Always reads toolSuccessBg for BG_BASE (used for context/add line backgrounds).
+ *  Also auto-switches the Shiki syntax theme when the pi theme changes between light and dark. */
 function resolveDiffColors(theme?: PiTheme): DiffColors {
 	const currentThemeKey = themeCacheKey(theme);
-	if (!_hasExplicitBgConfig && _lastResolvedThemeKey && _lastResolvedThemeKey !== currentThemeKey) {
-		BG_BASE = BG_DEFAULT;
-		RST = "\x1b[0m";
-		_autoDerivePending = true;
+	if (_lastResolvedThemeKey && _lastResolvedThemeKey !== currentThemeKey) {
+		// Theme changed — reset for re-derivation
+		if (!_hasExplicitBgConfig) {
+			BG_BASE = BG_DEFAULT;
+			RST = "\x1b[0m";
+			_autoDerivePending = true;
+		}
+		// Auto-switch Shiki theme based on light/dark mode
+		const mode = detectThemeMode(theme);
+		THEME = mode === "light" ? _shikiLight : _shikiDark;
 	}
 	_lastResolvedThemeKey = currentThemeKey;
 	// Always read toolSuccessBg for BG_BASE (even with explicit config)
