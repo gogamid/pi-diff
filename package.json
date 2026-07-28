@@ -33,6 +33,7 @@
 	"type": "module",
 	"scripts": {
 		"build": "tsc",
+		"prepare": "npm run build",
 		"typecheck": "tsc --noEmit",
 		"lint": "biome check src/",
 		"lint:fix": "biome check --fix src/",
