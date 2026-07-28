@@ -43,6 +43,10 @@ interface DiffPreset {
 interface DiffUserConfig {
 	diffTheme?: string;
 	diffColors?: Record<string, string>;
+	diffShikiThemes?: {
+		light?: string;
+		dark?: string;
+	};
 }
 
 interface DiffColors {
@@ -166,6 +170,22 @@ let DEFAULT_DIFF_COLORS: DiffColors = { fgAdd: FG_ADD, fgDel: FG_DEL, fgCtx: FG_
 let _lastResolvedThemeKey = "";
 let _autoDerivePending = true;
 let _hasExplicitBgConfig = false;
+
+/** Load Shiki theme mapping for light/dark mode from config. */
+function loadShikiThemeMap(): { light: BundledTheme; dark: BundledTheme } {
+	try {
+		const raw = loadDiffConfig();
+		const st = raw.diffShikiThemes;
+		return {
+			light: (st?.light ?? "github-light") as BundledTheme,
+			dark: (st?.dark ?? "github-dark") as BundledTheme,
+		};
+	} catch {
+		return { light: "github-light" as BundledTheme, dark: "github-dark" as BundledTheme };
+	}
+}
+const _shikiThemes = loadShikiThemeMap();
+
 let THEME: BundledTheme = (process.env.DIFF_THEME as BundledTheme | undefined) ?? "github-dark";
 let paletteApplied = false;
 
@@ -349,8 +369,8 @@ function loadDiffConfig(): DiffUserConfig {
 		try {
 			if (existsSync(path)) {
 				const raw = JSON.parse(readFileSync(path, "utf-8"));
-				if (raw.diffTheme || raw.diffColors) {
-					return { diffTheme: raw.diffTheme, diffColors: raw.diffColors };
+				if (raw.diffTheme || raw.diffColors || raw.diffShikiThemes) {
+					return { diffTheme: raw.diffTheme, diffColors: raw.diffColors, diffShikiThemes: raw.diffShikiThemes };
 				}
 			}
 		} catch {}
@@ -472,12 +492,35 @@ export function themeCacheKey(theme?: any): string {
 	return parts.join("|");
 }
 
+/** Detect whether the current pi theme is light or dark by checking
+ *  the luminance of toolSuccessBg. Returns "light" or "dark". */
+function detectThemeMode(theme?: any): "light" | "dark" {
+	if (theme?.getBgAnsi) {
+		try {
+			const bgAnsi = theme.getBgAnsi("toolSuccessBg");
+			const parsed = parseAnsiRgb(bgAnsi);
+			if (parsed) {
+				const luminance = 0.2126 * parsed.r + 0.7152 * parsed.g + 0.0722 * parsed.b;
+				return luminance > 128 ? "light" : "dark";
+			}
+		} catch {
+			/* ignore */
+		}
+	}
+	return "dark";
+}
+
 export function resolveDiffColors(theme?: any): DiffColors {
 	const currentThemeKey = themeCacheKey(theme);
-	if (!_hasExplicitBgConfig && _lastResolvedThemeKey && _lastResolvedThemeKey !== currentThemeKey) {
-		BG_BASE = BG_DEFAULT;
-		RST = "\x1b[0m";
-		_autoDerivePending = true;
+	if (_lastResolvedThemeKey && _lastResolvedThemeKey !== currentThemeKey) {
+		if (!_hasExplicitBgConfig) {
+			BG_BASE = BG_DEFAULT;
+			RST = "\x1b[0m";
+			_autoDerivePending = true;
+		}
+		// Auto-switch Shiki theme based on light/dark mode
+		const mode = detectThemeMode(theme);
+		THEME = mode === "light" ? _shikiThemes.light : _shikiThemes.dark;
 	}
 	_lastResolvedThemeKey = currentThemeKey;
 	if (theme?.getBgAnsi && BG_BASE === BG_DEFAULT) {
